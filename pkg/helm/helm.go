@@ -32,11 +32,11 @@ func NewHelm(kubernetes Kubernetes) *Helm {
 	return &Helm{kubernetes: kubernetes}
 }
 
-func (h *Helm) Install(ctx context.Context, chart string, values map[string]interface{}, name string, namespace string, helmCfg *Config) (string, error) {
+func (h *Helm) Install(ctx context.Context, chart string, values map[string]interface{}, name string, namespace string, helmCfg *Config, storageDriver string) (string, error) {
 	if err := validateChartReference(chart, helmCfg); err != nil {
 		return "", err
 	}
-	cfg, err := h.newAction(h.kubernetes.NamespaceOrDefault(namespace), false)
+	cfg, err := h.newAction(h.kubernetes.NamespaceOrDefault(namespace), false, storageDriver)
 	if err != nil {
 		return "", err
 	}
@@ -73,8 +73,8 @@ func (h *Helm) Install(ctx context.Context, chart string, values map[string]inte
 }
 
 // List lists all the releases for the specified namespace (or current namespace if). Or allNamespaces is true, it lists all releases across all namespaces.
-func (h *Helm) List(namespace string, allNamespaces bool) (string, error) {
-	cfg, err := h.newAction(namespace, allNamespaces)
+func (h *Helm) List(namespace string, allNamespaces bool, storageDriver string) (string, error) {
+	cfg, err := h.newAction(namespace, allNamespaces, storageDriver)
 	if err != nil {
 		return "", err
 	}
@@ -93,8 +93,8 @@ func (h *Helm) List(namespace string, allNamespaces bool) (string, error) {
 	return string(ret), nil
 }
 
-func (h *Helm) Uninstall(name string, namespace string) (string, error) {
-	cfg, err := h.newAction(h.kubernetes.NamespaceOrDefault(namespace), false)
+func (h *Helm) Uninstall(name string, namespace string, storageDriver string) (string, error) {
+	cfg, err := h.newAction(h.kubernetes.NamespaceOrDefault(namespace), false, storageDriver)
 	if err != nil {
 		return "", err
 	}
@@ -111,7 +111,10 @@ func (h *Helm) Uninstall(name string, namespace string) (string, error) {
 	return fmt.Sprintf("Uninstalled release %s %s", uninstalledRelease.Release.Name, uninstalledRelease.Info), nil
 }
 
-func (h *Helm) newAction(namespace string, allNamespaces bool) (*action.Configuration, error) {
+func (h *Helm) newAction(namespace string, allNamespaces bool, storageDriver string) (*action.Configuration, error) {
+	if err := validateStorageDriver(storageDriver); err != nil {
+		return nil, err
+	}
 	cfg := new(action.Configuration)
 	applicableNamespace := ""
 	if !allNamespaces {
@@ -122,7 +125,7 @@ func (h *Helm) newAction(namespace string, allNamespaces bool) (*action.Configur
 		return nil, err
 	}
 	cfg.RegistryClient = registryClient
-	return cfg, cfg.Init(h.kubernetes, applicableNamespace, "", klog.V(5).Infof)
+	return cfg, cfg.Init(h.kubernetes, applicableNamespace, storageDriver, klog.V(5).Infof)
 }
 
 // validateChartReference blocks chart references using dangerous URL schemes.

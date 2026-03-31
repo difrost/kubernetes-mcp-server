@@ -35,6 +35,10 @@ func initHelm() []api.ServerTool {
 						Type:        "string",
 						Description: "Namespace to install the Helm chart in (Optional, current namespace if not provided)",
 					},
+					"storage_driver": {
+						Type:        "string",
+						Description: "Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)",
+					},
 				},
 				Required: []string{"chart"},
 			},
@@ -59,6 +63,10 @@ func initHelm() []api.ServerTool {
 						Type:        "boolean",
 						Description: "If true, lists all Helm releases in all namespaces ignoring the namespace argument (Optional)",
 					},
+					"storage_driver": {
+						Type:        "string",
+						Description: "Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)",
+					},
 				},
 			},
 			Annotations: api.ToolAnnotations{
@@ -81,6 +89,10 @@ func initHelm() []api.ServerTool {
 					"namespace": {
 						Type:        "string",
 						Description: "Namespace to uninstall the Helm release from (Optional, current namespace if not provided)",
+					},
+					"storage_driver": {
+						Type:        "string",
+						Description: "Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)",
 					},
 				},
 				Required: []string{"name"},
@@ -119,7 +131,8 @@ func helmInstall(params api.ToolHandlerParams) (*api.ToolCallResult, error) {
 			helmCfg = hc
 		}
 	}
-	ret, err := helm.NewHelm(params).Install(params, chart, values, name, namespace, helmCfg)
+	storageDriver := resolveStorageDriver(params, helmCfg)
+	ret, err := helm.NewHelm(params).Install(params, chart, values, name, namespace, helmCfg, storageDriver)
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to install helm chart '%s': %w", chart, err)), nil
 	}
@@ -132,7 +145,14 @@ func helmList(params api.ToolHandlerParams) (*api.ToolCallResult, error) {
 	if v, ok := params.GetArguments()["namespace"].(string); ok {
 		namespace = v
 	}
-	ret, err := helm.NewHelm(params).List(namespace, allNamespaces)
+	var helmCfg *helm.Config
+	if cfg, ok := params.GetToolsetConfig("helm"); ok {
+		if hc, ok := cfg.(*helm.Config); ok {
+			helmCfg = hc
+		}
+	}
+	storageDriver := resolveStorageDriver(params, helmCfg)
+	ret, err := helm.NewHelm(params).List(namespace, allNamespaces, storageDriver)
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to list helm releases in namespace '%s': %w", namespace, err)), nil
 	}
@@ -149,9 +169,28 @@ func helmUninstall(params api.ToolHandlerParams) (*api.ToolCallResult, error) {
 	if v, ok := params.GetArguments()["namespace"].(string); ok {
 		namespace = v
 	}
-	ret, err := helm.NewHelm(params).Uninstall(name, namespace)
+	var helmCfg *helm.Config
+	if cfg, ok := params.GetToolsetConfig("helm"); ok {
+		if hc, ok := cfg.(*helm.Config); ok {
+			helmCfg = hc
+		}
+	}
+	storageDriver := resolveStorageDriver(params, helmCfg)
+	ret, err := helm.NewHelm(params).Uninstall(name, namespace, storageDriver)
 	if err != nil {
 		return api.NewToolCallResult("", fmt.Errorf("failed to uninstall helm chart '%s': %w", name, err)), nil
 	}
 	return api.NewToolCallResult(ret, err), nil
+}
+
+// resolveStorageDriver returns the storage driver to use for a Helm operation.
+// The per-call parameter takes precedence over the config default.
+func resolveStorageDriver(params api.ToolHandlerParams, helmCfg *helm.Config) string {
+	if v := api.OptionalString(params, "storage_driver", ""); v != "" {
+		return v
+	}
+	if helmCfg != nil {
+		return helmCfg.StorageDriver
+	}
+	return ""
 }

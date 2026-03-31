@@ -61,6 +61,33 @@ func (s *ConfigSuite) TestValidate() {
 	})
 }
 
+func (s *ConfigSuite) TestValidateStorageDriver() {
+	s.Run("accepts empty string", func() {
+		s.NoError(validateStorageDriver(""))
+	})
+	s.Run("accepts secret", func() {
+		s.NoError(validateStorageDriver("secret"))
+	})
+	s.Run("accepts configmap", func() {
+		s.NoError(validateStorageDriver("configmap"))
+	})
+	s.Run("rejects unsupported memory driver", func() {
+		err := validateStorageDriver("memory")
+		s.Error(err)
+		s.Contains(err.Error(), "unsupported Helm storage driver")
+	})
+	s.Run("rejects unsupported sql driver", func() {
+		err := validateStorageDriver("sql")
+		s.Error(err)
+		s.Contains(err.Error(), "unsupported Helm storage driver")
+	})
+	s.Run("rejects arbitrary string", func() {
+		err := validateStorageDriver("random")
+		s.Error(err)
+		s.Contains(err.Error(), "unsupported Helm storage driver")
+	})
+}
+
 func (s *ConfigSuite) TestParser() {
 	s.Run("parses allowed_registries from TOML", func() {
 		cfg := test.Must(config.ReadToml([]byte(`
@@ -98,6 +125,25 @@ func (s *ConfigSuite) TestParser() {
 		`))
 		s.Error(err)
 		s.Contains(err.Error(), "must use oci:// or https:// scheme")
+	})
+	s.Run("parses storage_driver from TOML", func() {
+		cfg := test.Must(config.ReadToml([]byte(`
+			[toolset_configs.helm]
+			storage_driver = "configmap"
+		`)))
+		helmCfg, ok := cfg.GetToolsetConfig("helm")
+		s.Require().True(ok)
+		hc, ok := helmCfg.(*Config)
+		s.Require().True(ok)
+		s.Equal("configmap", hc.StorageDriver)
+	})
+	s.Run("rejects unsupported storage_driver in TOML", func() {
+		_, err := config.ReadToml([]byte(`
+			[toolset_configs.helm]
+			storage_driver = "memory"
+		`))
+		s.Error(err)
+		s.Contains(err.Error(), "unsupported Helm storage driver")
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 // Config holds Helm toolset configuration
 type Config struct {
 	AllowedRegistries []string `toml:"allowed_registries,omitempty"`
+	StorageDriver     string   `toml:"storage_driver,omitempty"`
 }
 
 var _ api.ExtendedConfig = (*Config)(nil)
@@ -38,6 +39,10 @@ func (c *Config) Validate() error {
 		// so runtime comparison against the normalized chart reference is case-insensitive.
 		c.AllowedRegistries[i] = strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/")
 	}
+	if err := validateStorageDriver(c.StorageDriver); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -47,6 +52,18 @@ func helmToolsetParser(_ context.Context, primitive toml.Primitive, md toml.Meta
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// validateStorageDriver validates against supported Helm storage backends.
+// Supported values are: "secret", "configmap" and "".
+// An empty string defaults to "secret" - Helm's default behavior.
+func validateStorageDriver(driver string) error {
+	switch driver {
+	case "", "secret", "configmap":
+		return nil
+	default:
+		return fmt.Errorf("unsupported Helm storage driver %q: must be \"secret\" or \"configmap\"", driver)
+	}
 }
 
 func init() {
