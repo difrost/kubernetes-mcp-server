@@ -399,15 +399,18 @@ In case multi-cluster support is enabled (default) and you have access to multip
   - `chart` (`string`) **(required)** - Chart reference to install (for example: stable/grafana, oci://ghcr.io/nginxinc/charts/nginx-ingress)
   - `name` (`string`) - Name of the Helm release (Optional, random name if not provided)
   - `namespace` (`string`) - Namespace to install the Helm chart in (Optional, current namespace if not provided)
+  - `storage_driver` (`string`) - Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)
   - `values` (`object`) - Values to pass to the Helm chart (Optional)
 
 - **helm_list** - List all the Helm releases in the current or provided namespace (or in all namespaces if specified)
   - `all_namespaces` (`boolean`) - If true, lists all Helm releases in all namespaces ignoring the namespace argument (Optional)
   - `namespace` (`string`) - Namespace to list Helm releases from (Optional, all namespaces if not provided)
+  - `storage_driver` (`string`) - Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)
 
 - **helm_uninstall** - Uninstall a Helm release in the current or provided namespace
   - `name` (`string`) **(required)** - Name of the Helm release to uninstall
   - `namespace` (`string`) - Namespace to uninstall the Helm release from (Optional, current namespace if not provided)
+  - `storage_driver` (`string`) - Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)
 
 </details>
 
