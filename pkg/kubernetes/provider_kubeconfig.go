@@ -66,9 +66,15 @@ func (p *kubeConfigClusterProvider) reset() error {
 
 	rawConfig, err := m.kubernetes.clientCmdConfig.RawConfig()
 	if err != nil {
+		m.Close()
 		return err
 	}
 
+	for _, old := range p.managers {
+		if old != nil {
+			old.Close()
+		}
+	}
 	p.managers = map[string]*Manager{
 		rawConfig.CurrentContext: m, // we already initialized a manager for the default context, let's use it
 	}
