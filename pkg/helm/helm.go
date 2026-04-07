@@ -25,15 +25,16 @@ type Kubernetes interface {
 
 type Helm struct {
 	kubernetes Kubernetes
+	config     *Config
 }
 
 // NewHelm creates a new Helm instance
-func NewHelm(kubernetes Kubernetes) *Helm {
-	return &Helm{kubernetes: kubernetes}
+func NewHelm(kubernetes Kubernetes, config *Config) *Helm {
+	return &Helm{kubernetes: kubernetes, config: config}
 }
 
-func (h *Helm) Install(ctx context.Context, chart string, values map[string]interface{}, name string, namespace string, helmCfg *Config, storageDriver string) (string, error) {
-	if err := validateChartReference(chart, helmCfg); err != nil {
+func (h *Helm) Install(ctx context.Context, chart string, values map[string]interface{}, name string, namespace string, storageDriver string) (string, error) {
+	if err := validateChartReference(chart, h.config); err != nil {
 		return "", err
 	}
 	cfg, err := h.newAction(h.kubernetes.NamespaceOrDefault(namespace), false, storageDriver)
@@ -112,8 +113,12 @@ func (h *Helm) Uninstall(name string, namespace string, storageDriver string) (s
 }
 
 func (h *Helm) newAction(namespace string, allNamespaces bool, storageDriver string) (*action.Configuration, error) {
-	if err := validateStorageDriver(storageDriver); err != nil {
-		return nil, err
+	driver := storageDriver
+	if h.config != nil && storageDriver == "" {
+		driver = h.config.StorageDriver
+	}
+	if driver != "secret" && driver != "configmap" {
+		return nil, fmt.Errorf("unsupported Helm storage driver %q: must be \"secret\" or \"configmap\"", driver)
 	}
 	cfg := new(action.Configuration)
 	applicableNamespace := ""
@@ -125,7 +130,7 @@ func (h *Helm) newAction(namespace string, allNamespaces bool, storageDriver str
 		return nil, err
 	}
 	cfg.RegistryClient = registryClient
-	return cfg, cfg.Init(h.kubernetes, applicableNamespace, storageDriver, klog.V(5).Infof)
+	return cfg, cfg.Init(h.kubernetes, applicableNamespace, driver, klog.V(5).Infof)
 }
 
 // validateChartReference blocks chart references using dangerous URL schemes.

@@ -87,6 +87,9 @@ type StaticConfig struct {
 	// and outbound connections to non-HTTPS endpoints will be rejected.
 	RequireTLS bool `toml:"require_tls,omitempty"`
 
+	// HTTP server configuration (timeouts, size limits)
+	HTTP HTTPConfig `toml:"http,omitempty"`
+
 	// ClusterProviderStrategy is how the server finds clusters.
 	// If set to "kubeconfig", the clusters will be loaded from those in the kubeconfig.
 	// If set to "in-cluster", the server will use the in cluster config
@@ -324,6 +327,10 @@ func ReadToml(configData []byte, opts ...ReadConfigOpt) (*StaticConfig, error) {
 	config.parsedToolsetConfigs, err = toolsetConfigRegistry.parse(ctx, md, config.ToolsetConfigs)
 	if err != nil {
 		return nil, err
+	}
+
+	if fb := config.ConfirmationFallback; fb != "" && fb != "allow" && fb != "deny" {
+		return nil, fmt.Errorf("invalid confirmation_fallback %q: must be \"allow\" or \"deny\"", fb)
 	}
 
 	var ruleErrors []error

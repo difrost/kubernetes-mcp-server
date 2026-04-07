@@ -13,7 +13,7 @@ type ConfigSuite struct {
 }
 
 func (s *ConfigSuite) TestValidate() {
-	s.Run("valid config with no allowed registries", func() {
+	s.Run("valid clean config", func() {
 		cfg := &Config{}
 		s.NoError(cfg.Validate())
 	})
@@ -30,7 +30,7 @@ func (s *ConfigSuite) TestValidate() {
 		var cfg *Config
 		s.Error(cfg.Validate())
 	})
-	s.Run("normalizes entries to lowercase and trims trailing slashes", func() {
+	s.Run("normalizes allowed registries to lowercase and trims trailing slashes", func() {
 		cfg := &Config{
 			AllowedRegistries: []string{
 				"OCI://GHCR.IO/myorg/",
@@ -59,30 +59,46 @@ func (s *ConfigSuite) TestValidate() {
 		s.Error(err)
 		s.Contains(err.Error(), "must use oci:// or https:// scheme")
 	})
-}
-
-func (s *ConfigSuite) TestValidateStorageDriver() {
-	s.Run("accepts empty string", func() {
-		s.NoError(validateStorageDriver(""))
+	s.Run("normalizes storage driver to lowercase", func() {
+		cfg := &Config{
+			StorageDriver: "COnfIgmAP",
+		}
+		s.NoError(cfg.Validate())
+		s.Equal("configmap", cfg.StorageDriver)
 	})
-	s.Run("accepts secret", func() {
-		s.NoError(validateStorageDriver("secret"))
+	s.Run("accepts secret storage driver", func() {
+		cfg := &Config{
+			StorageDriver: "secret",
+		}
+		s.NoError(cfg.Validate())
 	})
-	s.Run("accepts configmap", func() {
-		s.NoError(validateStorageDriver("configmap"))
+	s.Run("accepts configmap storage driver", func() {
+		cfg := &Config{
+			StorageDriver: "configmap",
+		}
+		s.NoError(cfg.Validate())
 	})
-	s.Run("rejects unsupported memory driver", func() {
-		err := validateStorageDriver("memory")
+	s.Run("rejects unsupported memory storage driver", func() {
+		cfg := &Config{
+			StorageDriver: "memory",
+		}
+		err := cfg.Validate()
 		s.Error(err)
 		s.Contains(err.Error(), "unsupported Helm storage driver")
 	})
-	s.Run("rejects unsupported sql driver", func() {
-		err := validateStorageDriver("sql")
+	s.Run("rejects unsupported sql storage driver", func() {
+		cfg := &Config{
+			StorageDriver: "sql",
+		}
+		err := cfg.Validate()
 		s.Error(err)
 		s.Contains(err.Error(), "unsupported Helm storage driver")
 	})
-	s.Run("rejects arbitrary string", func() {
-		err := validateStorageDriver("random")
+	s.Run("rejects arbitrary storage string", func() {
+		cfg := &Config{
+			StorageDriver: "random",
+		}
+		err := cfg.Validate()
 		s.Error(err)
 		s.Contains(err.Error(), "unsupported Helm storage driver")
 	})
