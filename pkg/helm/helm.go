@@ -113,12 +113,18 @@ func (h *Helm) Uninstall(name string, namespace string, storageDriver string) (s
 }
 
 func (h *Helm) newAction(namespace string, allNamespaces bool, storageDriver string) (*action.Configuration, error) {
-	driver := storageDriver
-	if h.config != nil && storageDriver == "" {
-		driver = h.config.StorageDriver
+	// Determine the storage driver to use
+	var applicableDriver string
+	switch {
+	case storageDriver != "":
+		applicableDriver = storageDriver
+	case h.config != nil:
+		applicableDriver = h.config.StorageDriver
 	}
-	if driver != "secret" && driver != "configmap" {
-		return nil, fmt.Errorf("unsupported Helm storage driver %q: must be \"secret\" or \"configmap\"", driver)
+
+	// Validate storage driver only if it's specified (empty is allowed for default behavior)
+	if applicableDriver != "" && applicableDriver != "secret" && applicableDriver != "configmap" {
+		return nil, fmt.Errorf("unsupported Helm storage driver %q: must be \"secret\" or \"configmap\"", applicableDriver)
 	}
 	cfg := new(action.Configuration)
 	applicableNamespace := ""
@@ -130,7 +136,7 @@ func (h *Helm) newAction(namespace string, allNamespaces bool, storageDriver str
 		return nil, err
 	}
 	cfg.RegistryClient = registryClient
-	return cfg, cfg.Init(h.kubernetes, applicableNamespace, driver, klog.V(5).Infof)
+	return cfg, cfg.Init(h.kubernetes, applicableNamespace, applicableDriver, klog.V(5).Infof)
 }
 
 // validateChartReference blocks chart references using dangerous URL schemes.

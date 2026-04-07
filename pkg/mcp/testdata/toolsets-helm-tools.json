@@ -20,14 +20,14 @@
           "description": "Namespace to install the Helm chart in (Optional, current namespace if not provided)",
           "type": "string"
         },
+        "storage_driver": {
+          "description": "Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)",
+          "type": "string"
+        },
         "values": {
           "description": "Values to pass to the Helm chart (Optional)",
           "properties": {},
           "type": "object"
-        },
-        "storage_driver": {
-          "description": "Helm storage driver to use for storing release metadata. Supported values: 'secret' (default) and 'configmap' (Optional)",
-          "type": "string"
         }
       },
       "required": [
