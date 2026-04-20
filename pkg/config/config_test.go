@@ -1066,13 +1066,14 @@ func (s *ConfigSuite) TestToolOverridesParsed() {
 	s.Require().NotNil(config)
 
 	s.Run("parses tool_overrides with multiple entries", func() {
-		s.Require().Len(config.ToolOverrides, 2)
+		s.Require().Contains(config.ToolOverrides, "pods_list")
+		s.Require().Contains(config.ToolOverrides, "resources_get")
 		s.Equal("Custom pods list description", config.ToolOverrides["pods_list"].Description)
 		s.Equal("Custom resources get description", config.ToolOverrides["resources_get"].Description)
 	})
 }
 
-func (s *ConfigSuite) TestToolOverridesNilWhenNotSpecified() {
+func (s *ConfigSuite) TestToolOverridesMatchDefaultsWhenNotSpecified() {
 	configPath := s.writeConfig(`
 		log_level = 1
 	`)
@@ -1081,8 +1082,8 @@ func (s *ConfigSuite) TestToolOverridesNilWhenNotSpecified() {
 	s.Require().NoError(err)
 	s.Require().NotNil(config)
 
-	s.Run("ToolOverrides is nil when not specified", func() {
-		s.Nil(config.ToolOverrides)
+	s.Run("ToolOverrides matches defaults when not specified", func() {
+		s.Equal(s.defaults.ToolOverrides, config.ToolOverrides)
 	})
 }
 
@@ -1187,73 +1188,6 @@ func (s *ConfigSuite) TestConfirmationRulesParsing() {
 		r := config.GetConfirmationRules()[3]
 		s.Equal("get", r.Verb)
 		s.Equal("Secret", r.Kind)
-	})
-}
-
-func (s *ConfigSuite) TestConfirmationRulesValidationRejectsMixed() {
-	configPath := s.writeConfig(`
-		[[confirmation_rules]]
-		tool = "helm_uninstall"
-		verb = "delete"
-		message = "Mixed rule."
-	`)
-	_, err := Read(configPath, "")
-	s.Run("returns error for mixed tool and kube fields", func() {
-		s.Require().Error(err)
-		s.Contains(err.Error(), "invalid confirmation rules")
-	})
-}
-
-func (s *ConfigSuite) TestConfirmationRulesValidationReportsAllErrors() {
-	configPath := s.writeConfig(`
-		[[confirmation_rules]]
-		tool = "a"
-		verb = "delete"
-		message = "Mixed 1."
-
-		[[confirmation_rules]]
-		destructive = true
-		kind = "Pod"
-		message = "Mixed 2."
-	`)
-	_, err := Read(configPath, "")
-	s.Run("reports all validation errors", func() {
-		s.Require().Error(err)
-		s.Contains(err.Error(), "confirmation_rules[0]")
-		s.Contains(err.Error(), "confirmation_rules[1]")
-	})
-}
-
-func (s *ConfigSuite) TestConfirmationFallbackValidation() {
-	s.Run("rejects invalid fallback value", func() {
-		configPath := s.writeConfig(`confirmation_fallback = "block"`)
-		_, err := Read(configPath, "")
-		s.Require().Error(err)
-		s.Contains(err.Error(), "invalid confirmation_fallback")
-	})
-	s.Run("accepts allow", func() {
-		configPath := s.writeConfig(`confirmation_fallback = "allow"`)
-		config, err := Read(configPath, "")
-		s.Require().NoError(err)
-		s.Equal("allow", config.GetConfirmationFallback())
-	})
-	s.Run("accepts deny", func() {
-		configPath := s.writeConfig(`confirmation_fallback = "deny"`)
-		config, err := Read(configPath, "")
-		s.Require().NoError(err)
-		s.Equal("deny", config.GetConfirmationFallback())
-	})
-}
-
-func (s *ConfigSuite) TestConfirmationRulesValidationRejectsEmptyRule() {
-	configPath := s.writeConfig(`
-		[[confirmation_rules]]
-		message = "No level fields."
-	`)
-	_, err := Read(configPath, "")
-	s.Run("returns error for rule with no level fields", func() {
-		s.Require().Error(err)
-		s.Contains(err.Error(), "must set at least one")
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,11 +38,17 @@ func NewKubeconfigManager(config api.BaseConfig, kubeconfigContext string) (*Man
 	if config.GetKubeConfigPath() != "" {
 		pathOptions.LoadingRules.ExplicitPath = config.GetKubeConfigPath()
 	}
+
+	resolvedContext, err := resolveKubeconfigContext(pathOptions.LoadingRules, kubeconfigContext)
+	if err != nil {
+		return nil, err
+	}
+
 	clientCmdConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		pathOptions.LoadingRules,
 		&clientcmd.ConfigOverrides{
 			ClusterInfo:    clientcmdapi.Cluster{Server: ""},
-			CurrentContext: kubeconfigContext,
+			CurrentContext: resolvedContext,
 		})
 
 	restConfig, err := clientCmdConfig.ClientConfig()
@@ -50,6 +57,49 @@ func NewKubeconfigManager(config api.BaseConfig, kubeconfigContext string) (*Man
 	}
 
 	return NewManager(config, restConfig, clientCmdConfig)
+}
+
+// resolveKubeconfigContext determines which kubeconfig context to use.
+// If kubeconfigContext is explicitly set, it is returned as-is.
+// If it is empty, the function loads the kubeconfig and:
+//   - returns the current-context if set
+//   - auto-selects the only available context if there is exactly one
+//   - returns a descriptive error if there are zero or multiple contexts
+func resolveKubeconfigContext(loadingRules *clientcmd.ClientConfigLoadingRules, kubeconfigContext string) (string, error) {
+	if kubeconfigContext != "" {
+		return kubeconfigContext, nil
+	}
+
+	rawConfig, err := loadingRules.Load()
+	if err != nil {
+		return "", fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
+
+	if rawConfig.CurrentContext != "" {
+		return rawConfig.CurrentContext, nil
+	}
+
+	switch len(rawConfig.Contexts) {
+	case 0:
+		return "", fmt.Errorf( //nolint:ST1005 // user-facing error with actionable guidance
+			"no current-context is set and no contexts are defined in kubeconfig.\n" +
+				"Configure a context with 'kubectl config set-context <name>' and 'kubectl config use-context <name>'")
+	case 1:
+		for name := range rawConfig.Contexts {
+			klog.Infof("current-context is not set in kubeconfig, auto-selecting the only available context %q", name)
+			return name, nil
+		}
+	}
+
+	names := make([]string, 0, len(rawConfig.Contexts))
+	for name := range rawConfig.Contexts {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return "", fmt.Errorf( //nolint:ST1005 // user-facing error with actionable guidance
+		"current-context is not set in kubeconfig and multiple contexts are available (%s).\n"+
+			"Set one with 'kubectl config use-context <context-name>'",
+		strings.Join(names, ", "))
 }
 
 func NewInClusterManager(config api.BaseConfig) (*Manager, error) {
@@ -115,12 +165,18 @@ func NewManager(config api.BaseConfig, restConfig *rest.Config, clientCmdConfig 
 
 func (m *Manager) Derived(ctx context.Context) (*Kubernetes, error) {
 	authorization, ok := ctx.Value(OAuthAuthorizationHeader).(string)
-	if !ok || !strings.HasPrefix(authorization, "Bearer ") {
-		if m.config.IsRequireOAuth() {
-			return nil, errors.New("oauth token required")
+	hasToken := ok && strings.HasPrefix(authorization, "Bearer ")
+
+	// No token: use kubeconfig credentials, or reject if passthrough requires one.
+	// In kubeconfig mode, the token exchange layer clears the auth header before we get here,
+	// so this branch handles both "no token sent" and "kubeconfig mode cleared it".
+	if !hasToken {
+		if m.config.ResolveClusterAuthMode() == api.ClusterAuthPassthrough {
+			return nil, errors.New("oauth token required for passthrough auth mode")
 		}
 		return m.kubernetes, nil
 	}
+
 	klog.V(5).Infof("%s header found (Bearer), using provided bearer token", OAuthAuthorizationHeader)
 	userAgent := CustomUserAgent
 	if ua, ok := ctx.Value(UserAgentHeader).(string); ok && ua != "" {
@@ -146,20 +202,12 @@ func (m *Manager) Derived(ctx context.Context) (*Kubernetes, error) {
 	}
 	clientCmdApiConfig, err := m.kubernetes.clientCmdConfig.RawConfig()
 	if err != nil {
-		if m.config.IsRequireOAuth() {
-			klog.Errorf("failed to get kubeconfig: %v", err)
-			return nil, fmt.Errorf("failed to get kubeconfig: %w", err)
-		}
-		return m.kubernetes, nil
+		return nil, fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 	clientCmdApiConfig.AuthInfos = make(map[string]*clientcmdapi.AuthInfo)
 	derived, err := NewKubernetes(m.config, clientcmd.NewDefaultClientConfig(clientCmdApiConfig, nil), derivedCfg)
 	if err != nil {
-		if m.config.IsRequireOAuth() {
-			klog.Errorf("failed to create derived client: %v", err)
-			return nil, fmt.Errorf("failed to create derived client: %w", err)
-		}
-		return m.kubernetes, nil
+		return nil, fmt.Errorf("failed to create derived client: %w", err)
 	}
 	context.AfterFunc(ctx, derived.close)
 	return derived, nil
