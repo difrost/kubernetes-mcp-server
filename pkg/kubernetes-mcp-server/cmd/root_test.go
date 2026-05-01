@@ -690,7 +690,7 @@ func TestLogFile(t *testing.T) {
 		err := rootCmd.Execute()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to open log file")
-		assert.Contains(t, err.Error(), "missing/server.log")
+		assert.Contains(t, err.Error(), logPath)
 	})
 
 	t.Run("log_file from TOML config is used", func(t *testing.T) {
