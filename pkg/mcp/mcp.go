@@ -3,13 +3,14 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 	"reflect"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/time/rate"
 	"k8s.io/klog/v2"
@@ -96,6 +97,7 @@ func NewServer(configuration Configuration, targetProvider internalk8s.Provider)
 					Logging:   &mcp.LoggingCapabilities{},
 				},
 				Instructions: configuration.ServerInstructions,
+				Logger:       slog.New(logr.ToSlogHandler(klog.Background())),
 			}),
 		p: targetProvider,
 	}
@@ -130,7 +132,7 @@ func NewServer(configuration Configuration, targetProvider internalk8s.Provider)
 	s.server.AddReceivingMiddleware(tracingMiddleware(version.BinaryName + "/mcp"))
 	s.server.AddReceivingMiddleware(authHeaderPropagationMiddleware)
 	s.server.AddReceivingMiddleware(userAgentPropagationMiddleware(version.BinaryName, version.Version))
-	s.server.AddReceivingMiddleware(toolCallLoggingMiddleware)
+	s.server.AddReceivingMiddleware(protocolLoggingMiddleware)
 	s.server.AddReceivingMiddleware(s.metricsMiddleware())
 
 	err = s.reloadToolsets()
@@ -391,7 +393,7 @@ func (s *Server) GetMetrics() *metrics.Metrics {
 }
 
 func (s *Server) ServeStdio(ctx context.Context) error {
-	return s.server.Run(ctx, &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: os.Stderr})
+	return s.server.Run(ctx, &mcp.StdioTransport{})
 }
 
 func (s *Server) ServeSse() *mcp.SSEHandler {

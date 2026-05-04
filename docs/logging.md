@@ -22,9 +22,22 @@ kubernetes-mcp-server --log-file /var/log/kubernetes-mcp-server.log --log-level 
 | Setting | Description |
 |---|---|
 | `log_file` | Path to the log file. Created if it does not exist; opened in append mode (`O_APPEND`). Use the special value `stderr` to route logs to stderr without opening a file. |
-| `log_level` | Verbosity level 0-9 (default `0`). Higher values produce more output. |
+| `log_level` | Verbosity level 0-9 (default `0`). Higher values produce more output. See the verbosity reference below for details. |
 
 **Note for stdio mode:** `log_file` is the *only* way to get server-side diagnostic logs when using the STDIO transport, because stdout is the MCP protocol channel. Protocol allows logging to stderr in stdio mode.
+
+### Verbosity Reference
+
+| Level | What is logged |
+|---|---|
+| `0` | **Default level** - Critical system errors and failures. |
+| `1` | **Level 1** - MCP server configuration reloads, OAuth provider changes, OpenTelemetry initialization, authentication failures, well-known proxy failures. |
+| `2` | **Level 2** - Workspace watching/polling, KCP workspace discovery, HTTP request handling, OpenTelemetry sampler selection, OTLP exporter creation. |
+| `3` | **Level 3** - Detailed workspace discovery, workspace polling results, KCP client creation failures. |
+| `4` | **Level 4** - TLS handshake errors (health checks), JWT client assertion details, OpenTelemetry resource creation. |
+| `5` | **Level 5** - HTTP request logging with method, path, status, and duration. |
+| `6` | **Level 6** - MCP protocol logging (incoming/outgoing method calls, parameters, results, errors), trace context extraction. |
+| `7` | **Level 7** - MCP tool call headers, GetMeta() panic recovery. |
 
 ## For Clients
 

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -21,6 +22,47 @@ import (
 	"golang.org/x/time/rate"
 	"k8s.io/klog/v2"
 )
+
+// protocolLoggingMiddleware logs incoming/outgoing MCP method calls (at V(6))
+// and tool call details (at V(5)/V(7)). It works uniformly in both stdio and HTTP modes.
+func protocolLoggingMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+		rawParams := req.GetParams()
+		klog.V(6).Infof("-> recv: %s params=%s", method, jsonCompact(rawParams))
+		if params, ok := rawParams.(*mcp.CallToolParamsRaw); ok {
+			toolCallRequest, err := GoSdkToolCallParamsToToolCallRequest(params)
+			if err == nil {
+				klog.V(5).Infof("mcp tool call: %s(%v)", toolCallRequest.Name, toolCallRequest.GetArguments())
+			}
+			if req.GetExtra() != nil && req.GetExtra().Header != nil {
+				buffer := bytes.NewBuffer(make([]byte, 0))
+				if err := req.GetExtra().Header.WriteSubset(buffer, map[string]bool{"Authorization": true, "authorization": true}); err == nil {
+					klog.V(7).Infof("mcp tool call headers: %s", buffer)
+				}
+			}
+		}
+		result, err := next(ctx, method, req)
+		if err != nil {
+			klog.V(6).Infof("<- send: %s error=%v", method, err)
+		} else {
+			klog.V(6).Infof("<- send: %s result=%s", method, jsonCompact(result))
+		}
+		return result, err
+	}
+}
+
+// jsonCompact marshals v to compact JSON for protocol logging.
+// Falls back to fmt.Sprintf on marshal failure.
+func jsonCompact(v any) string {
+	if v == nil {
+		return "<nil>"
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%+v", v)
+	}
+	return string(data)
+}
 
 // sessionInjectionMiddleware injects the MCP session into the context for logging support.
 // This middleware should be added first so all subsequent middleware and handlers have access.
@@ -70,25 +112,6 @@ func userAgentPropagationMiddleware(serverName, serverVersion string) func(mcp.M
 			))
 			return next(context.WithValue(ctx, internalk8s.UserAgentHeader, userAgentHeader), method, req)
 		}
-	}
-}
-
-func toolCallLoggingMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		switch params := req.GetParams().(type) {
-		case *mcp.CallToolParamsRaw:
-			toolCallRequest, err := GoSdkToolCallParamsToToolCallRequest(params)
-			if err == nil {
-				klog.V(5).Infof("mcp tool call: %s(%v)", toolCallRequest.Name, toolCallRequest.GetArguments())
-			}
-			if req.GetExtra() != nil && req.GetExtra().Header != nil {
-				buffer := bytes.NewBuffer(make([]byte, 0))
-				if err := req.GetExtra().Header.WriteSubset(buffer, map[string]bool{"Authorization": true, "authorization": true}); err == nil {
-					klog.V(7).Infof("mcp tool call headers: %s", buffer)
-				}
-			}
-		}
-		return next(ctx, method, req)
 	}
 }
 
