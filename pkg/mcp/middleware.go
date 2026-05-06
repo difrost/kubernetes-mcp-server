@@ -28,7 +28,12 @@ import (
 func protocolLoggingMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		rawParams := req.GetParams()
-		klog.V(6).Infof("-> recv: %s params=%s", method, jsonCompact(rawParams))
+		// Gate the JSON marshal explicitly: Infof's args are evaluated
+		// before the V(6) check, so an unguarded jsonCompact(rawParams)
+		// would marshal every request even at the default log_level=0.
+		if klog.V(6).Enabled() {
+			klog.V(6).Infof("-> recv: %s params=%s", method, jsonCompact(rawParams))
+		}
 		if params, ok := rawParams.(*mcp.CallToolParamsRaw); ok {
 			toolCallRequest, err := GoSdkToolCallParamsToToolCallRequest(params)
 			if err == nil {
@@ -44,7 +49,7 @@ func protocolLoggingMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 		result, err := next(ctx, method, req)
 		if err != nil {
 			klog.V(6).Infof("<- send: %s error=%v", method, err)
-		} else {
+		} else if klog.V(6).Enabled() {
 			klog.V(6).Infof("<- send: %s result=%s", method, jsonCompact(result))
 		}
 		return result, err
