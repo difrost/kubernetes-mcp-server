@@ -358,7 +358,7 @@ func fetchVirtLauncherPodLogs(ctx context.Context, client api.KubernetesClient, 
 // fetchEvents fetches events related to the VM and returns them formatted
 func fetchEvents(ctx context.Context, client api.KubernetesClient, namespace, vmName string) string {
 	core := kubernetes.NewCore(client)
-	eventMap, err := core.EventsList(ctx, namespace)
+	eventMap, err := core.EventsList(ctx, namespace, api.ListOptions{})
 	if err != nil {
 		return fmt.Sprintf("### Events\n\n*Error listing events: %v*", err)
 	}
