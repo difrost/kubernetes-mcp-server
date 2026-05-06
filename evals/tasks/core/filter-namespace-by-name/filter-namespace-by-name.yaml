@@ -12,4 +12,4 @@ steps:
   cleanup:
     file: cleanup.sh
   prompt:
-    inline: "Using a field selector, list only the namespaces 'ns-beta'"
+    inline: "Using a field selector, list only the namespace 'ns-beta' from the cluster"
