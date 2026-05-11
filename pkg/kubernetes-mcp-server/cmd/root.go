@@ -3,11 +3,9 @@ package cmd
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -16,7 +14,6 @@ import (
 
 	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 
@@ -24,6 +21,7 @@ import (
 	"github.com/containers/kubernetes-mcp-server/pkg/config"
 	internalhttp "github.com/containers/kubernetes-mcp-server/pkg/http"
 	"github.com/containers/kubernetes-mcp-server/pkg/kubernetes"
+	"github.com/containers/kubernetes-mcp-server/pkg/logging"
 	"github.com/containers/kubernetes-mcp-server/pkg/mcp"
 	internaloauth "github.com/containers/kubernetes-mcp-server/pkg/oauth"
 	"github.com/containers/kubernetes-mcp-server/pkg/output"
@@ -65,6 +63,7 @@ kubernetes-mcp-server --cluster-provider kcp
 const (
 	flagVersion              = "version"
 	flagLogLevel             = "log-level"
+	flagLogFile              = "log-file"
 	flagConfig               = "config"
 	flagConfigDir            = "config-dir"
 	flagPort                 = "port"
@@ -78,6 +77,7 @@ const (
 	flagRequireOAuth         = "require-oauth"
 	flagOAuthAudience        = "oauth-audience"
 	flagAuthorizationURL     = "authorization-url"
+	flagSkipJWTVerification  = "skip-jwt-verification"
 	flagServerUrl            = "server-url"
 	flagCertificateAuthority = "certificate-authority"
 	flagDisableMultiCluster  = "disable-multi-cluster"
@@ -90,6 +90,7 @@ const (
 type MCPServerOptions struct {
 	Version              bool
 	LogLevel             int
+	LogFile              string
 	Port                 string
 	SSEBaseUrl           string
 	Kubeconfig           string
@@ -101,6 +102,7 @@ type MCPServerOptions struct {
 	RequireOAuth         bool
 	OAuthAudience        string
 	AuthorizationURL     string
+	SkipJWTVerification  bool
 	CertificateAuthority string
 	ServerURL            string
 	DisableMultiCluster  bool
@@ -113,6 +115,7 @@ type MCPServerOptions struct {
 	ConfigDir    string
 	StaticConfig *config.StaticConfig
 
+	logSink *logging.Sink
 	genericiooptions.IOStreams
 }
 
@@ -134,6 +137,16 @@ func NewMCPServer(streams genericiooptions.IOStreams) *cobra.Command {
 			if err := o.Complete(c); err != nil {
 				return err
 			}
+			// Close the log sink whatever happens next: Validate may fail, Run
+			// may panic, the version short-circuit may exit early. The sink is
+			// the only thing that holds an open fd between Complete and now.
+			defer func() {
+				if o.logSink != nil {
+					if err := o.logSink.Close(); err != nil {
+						klog.Errorf("failed to close log sink: %v", err)
+					}
+				}
+			}()
 			if err := o.Validate(); err != nil {
 				return err
 			}
@@ -147,6 +160,7 @@ func NewMCPServer(streams genericiooptions.IOStreams) *cobra.Command {
 
 	cmd.Flags().BoolVar(&o.Version, flagVersion, o.Version, "Print version information and quit")
 	cmd.Flags().IntVar(&o.LogLevel, flagLogLevel, o.LogLevel, "Set the log level (from 0 to 9)")
+	cmd.Flags().StringVar(&o.LogFile, flagLogFile, o.LogFile, "Defines the server log file path. Required for logging in stdio mode; overrides stdout in HTTP mode. Set to \"stderr\" to log to the standard error stream.")
 	cmd.Flags().StringVar(&o.ConfigPath, flagConfig, o.ConfigPath, "Path of the config file.")
 	cmd.Flags().StringVar(&o.ConfigDir, flagConfigDir, o.ConfigDir, "Path to drop-in configuration directory (files loaded in lexical order). Defaults to "+config.DefaultDropInConfigDir+" relative to the config file if --config is set.")
 	cmd.Flags().StringVar(&o.Port, flagPort, o.Port, "Start a streamable HTTP and SSE HTTP server on the specified port (e.g. 8080)")
@@ -163,6 +177,8 @@ func NewMCPServer(streams genericiooptions.IOStreams) *cobra.Command {
 	_ = cmd.Flags().MarkHidden(flagOAuthAudience)
 	cmd.Flags().StringVar(&o.AuthorizationURL, flagAuthorizationURL, o.AuthorizationURL, "OAuth authorization server URL for protected resource endpoint. If not provided, the Kubernetes API server host will be used. Only valid if require-oauth is enabled.")
 	_ = cmd.Flags().MarkHidden(flagAuthorizationURL)
+	cmd.Flags().BoolVar(&o.SkipJWTVerification, flagSkipJWTVerification, o.SkipJWTVerification, "Skip JWT cryptographic signature verification when require-oauth is enabled but no authorization-url is configured. Only use behind a trusted reverse proxy that verifies tokens.")
+	_ = cmd.Flags().MarkHidden(flagSkipJWTVerification)
 	cmd.Flags().StringVar(&o.ServerURL, flagServerUrl, o.ServerURL, "Server URL of this application. Optional. If set, this url will be served in protected resource metadata endpoint and tokens will be validated with this audience. If not set, expected audience is kubernetes-mcp-server. Only valid if require-oauth is enabled.")
 	_ = cmd.Flags().MarkHidden(flagServerUrl)
 	cmd.Flags().StringVar(&o.CertificateAuthority, flagCertificateAuthority, o.CertificateAuthority, "Certificate authority path to verify certificates. Optional. Only valid if require-oauth is enabled.")
@@ -187,7 +203,11 @@ func (m *MCPServerOptions) Complete(cmd *cobra.Command) error {
 
 	m.loadFlags(cmd)
 
-	m.initializeLogging()
+	sink, err := logging.New(m.StaticConfig, m.Out, m.ErrOut)
+	if err != nil {
+		return err
+	}
+	m.logSink = sink
 
 	if m.StaticConfig.RequireOAuth && m.StaticConfig.Port == "" {
 		// RequireOAuth is not relevant flow for STDIO transport
@@ -200,6 +220,9 @@ func (m *MCPServerOptions) Complete(cmd *cobra.Command) error {
 func (m *MCPServerOptions) loadFlags(cmd *cobra.Command) {
 	if cmd.Flag(flagLogLevel).Changed {
 		m.StaticConfig.LogLevel = m.LogLevel
+	}
+	if cmd.Flag(flagLogFile).Changed {
+		m.StaticConfig.LogFile = m.LogFile
 	}
 	if cmd.Flag(flagPort).Changed {
 		m.StaticConfig.Port = m.Port
@@ -234,6 +257,9 @@ func (m *MCPServerOptions) loadFlags(cmd *cobra.Command) {
 	if cmd.Flag(flagAuthorizationURL).Changed {
 		m.StaticConfig.AuthorizationURL = m.AuthorizationURL
 	}
+	if cmd.Flag(flagSkipJWTVerification).Changed {
+		m.StaticConfig.SkipJWTVerification = m.SkipJWTVerification
+	}
 	if cmd.Flag(flagServerUrl).Changed {
 		m.StaticConfig.ServerURL = m.ServerURL
 	}
@@ -255,24 +281,6 @@ func (m *MCPServerOptions) loadFlags(cmd *cobra.Command) {
 	if cmd.Flag(flagRequireTLS).Changed {
 		m.StaticConfig.RequireTLS = m.RequireTLS
 	}
-}
-
-func (m *MCPServerOptions) initializeLogging() {
-	flagSet := flag.NewFlagSet("klog", flag.ContinueOnError)
-	klog.InitFlags(flagSet)
-	if m.StaticConfig.Port == "" {
-		// disable klog output for stdio mode
-		// this is needed to avoid klog writing to stderr and breaking the protocol
-		_ = flagSet.Parse([]string{"-logtostderr=false", "-alsologtostderr=false", "-stderrthreshold=FATAL"})
-		return
-	}
-	loggerOptions := []textlogger.ConfigOption{textlogger.Output(m.Out)}
-	if m.StaticConfig.LogLevel >= 0 {
-		loggerOptions = append(loggerOptions, textlogger.Verbosity(m.StaticConfig.LogLevel))
-		_ = flagSet.Parse([]string{"--v", strconv.Itoa(m.StaticConfig.LogLevel)})
-	}
-	logger := textlogger.NewLogger(textlogger.NewConfig(loggerOptions...))
-	klog.SetLoggerWithOptions(logger)
 }
 
 func (m *MCPServerOptions) Validate() error {
@@ -334,6 +342,7 @@ func (m *MCPServerOptions) Run() error {
 
 	mcpServer, err := mcp.NewServer(mcp.Configuration{
 		StaticConfig: m.StaticConfig,
+		SDKLogger:    m.logSink.SDKLogger(),
 	}, provider)
 	if err != nil {
 		return fmt.Errorf("failed to initialize MCP server: %w", err)
@@ -346,14 +355,20 @@ func (m *MCPServerOptions) Run() error {
 		}
 	}()
 
-	// Set up SIGHUP handler for configuration reload
+	cfgState := config.NewStaticConfigState(m.StaticConfig)
+
+	// Set up SIGHUP handler for configuration reload. The returned stop
+	// function unregisters the signal handler and waits for the goroutine
+	// to drain — important because the goroutine accesses m.logSink, which
+	// the deferred Close in NewMCPServer's RunE would otherwise race with.
 	if m.ConfigPath != "" || m.ConfigDir != "" {
-		_ = m.setupSIGHUPHandler(mcpServer, oauthState)
+		stopSIGHUP := m.setupSIGHUPHandler(mcpServer, oauthState, cfgState)
+		defer stopSIGHUP()
 	}
 
 	if m.StaticConfig.Port != "" {
 		ctx := context.Background()
-		return internalhttp.Serve(ctx, mcpServer, m.StaticConfig, oauthState)
+		return internalhttp.Serve(ctx, mcpServer, cfgState, oauthState)
 	}
 
 	ctx := context.Background()
@@ -367,7 +382,7 @@ func (m *MCPServerOptions) Run() error {
 // setupSIGHUPHandler sets up a signal handler to reload configuration on SIGHUP.
 // Returns a stop function that should be called to clean up the handler.
 // The stop function waits for the handler goroutine to finish.
-func (m *MCPServerOptions) setupSIGHUPHandler(mcpServer *mcp.Server, oauthState *internaloauth.State) (stop func()) {
+func (m *MCPServerOptions) setupSIGHUPHandler(mcpServer *mcp.Server, oauthState *internaloauth.State, cfgState *config.StaticConfigState) (stop func()) {
 	sigHupCh := make(chan os.Signal, 1)
 	done := make(chan struct{})
 	signal.Notify(sigHupCh, syscall.SIGHUP)
@@ -385,11 +400,23 @@ func (m *MCPServerOptions) setupSIGHUPHandler(mcpServer *mcp.Server, oauthState 
 			}
 
 			// Apply the new configuration to the MCP server first — if this fails,
-			// we skip the OAuth state update to avoid inconsistent state.
+			// we skip the OAuth state and config state updates to avoid inconsistent state.
 			if err := mcpServer.ReloadConfiguration(newConfig); err != nil {
 				klog.Errorf("Failed to apply reloaded configuration: %v", err)
 				continue
 			}
+
+			// Re-apply the log destination so log_file changes and file
+			// rotations are handled correctly. Failures are logged but never
+			// fatal — the previous destination is preserved. logSink can be
+			// nil in tests that exercise the SIGHUP handler in isolation.
+			if m.logSink != nil {
+				if err := m.logSink.Reload(newConfig); err != nil {
+					klog.Errorf("Failed to reload log destination, keeping previous one: %v", err)
+				}
+			}
+			// Publish the new config so the HTTP auth middleware picks it up.
+			cfgState.Store(newConfig)
 
 			// Check if OAuth-relevant config changed and update the shared state
 			currentSnapshot := oauthState.Load()
