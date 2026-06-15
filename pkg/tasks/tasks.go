@@ -55,9 +55,10 @@ type Tasks struct {
 	tasks     []*Task
 	Timeout   time.Duration // per-task max timeout safety ceiling
 	g         *errgroup.Group
-	gCtx      context.Context
-	completed atomic.Bool    // set after Complete returns; prevents further AddTask calls
-	pending   sync.WaitGroup // tracks in-flight g.Go submissions from AddTask
+	parentCtx context.Context // parent context, used by Execute
+	gCtx      context.Context // errgroup-derived context, used by AddTask
+	completed atomic.Bool     // set after Complete returns; prevents further AddTask calls
+	pending   sync.WaitGroup  // tracks in-flight g.Go submissions from AddTask
 }
 
 // New creates a Tasks instance with the given per-task max timeout.
@@ -71,9 +72,10 @@ func New(ctx context.Context, timeout time.Duration) *Tasks {
 	}
 	g, gCtx := errgroup.WithContext(ctx)
 	return &Tasks{
-		Timeout: timeout,
-		g:       g,
-		gCtx:    gCtx,
+		Timeout:   timeout,
+		g:         g,
+		gCtx:      gCtx,
+		parentCtx: ctx,
 	}
 }
 
@@ -82,18 +84,11 @@ func New(ctx context.Context, timeout time.Duration) *Tasks {
 // means no concurrency limit (equivalent to New).
 // This is useful when fanning out many tasks that hit the same rate-limited API client.
 func NewWithLimit(ctx context.Context, timeout time.Duration, limit int) *Tasks {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	g, gCtx := errgroup.WithContext(ctx)
+	ts := New(ctx, timeout)
 	if limit > 0 {
-		g.SetLimit(limit)
+		ts.g.SetLimit(limit)
 	}
-	return &Tasks{
-		Timeout: timeout,
-		g:       g,
-		gCtx:    gCtx,
-	}
+	return ts
 }
 
 // AddTask adds a task and immediately starts executing it in a goroutine
@@ -101,6 +96,11 @@ func NewWithLimit(ctx context.Context, timeout time.Duration, limit int) *Tasks 
 // (derived from parent context passed to New/NewWithLimit).
 // Use Complete to wait for all async tasks to finish.
 // AddTask is silently ignored after Complete has been called.
+//
+// Limitation: when using NewWithLimit, AddTask may block until a concurrency
+// slot opens. Because errgroup.Group.Go does not accept a context, this block
+// is not cancellable by the parent context. Tasks must therefore respect
+// ctx.Done() themselves, and a running task must never wait on Complete.
 func (ts *Tasks) AddTask(t *Task) {
 	if t == nil || t.Run == nil || ts.completed.Load() {
 		return
@@ -140,7 +140,7 @@ func (ts *Tasks) Execute(t *Task) *TaskResult {
 		Name: t.Name,
 		Run:  t.Run,
 	}
-	ts.executeTask(cp, ts.gCtx)
+	ts.executeTask(cp, ts.parentCtx)
 	ts.mu.Lock()
 	ts.tasks = append(ts.tasks, cp)
 	ts.mu.Unlock()
@@ -156,22 +156,35 @@ func (ts *Tasks) Execute(t *Task) *TaskResult {
 // When using NewWithLimit, tasks must not block waiting for Complete to
 // return; doing so can deadlock because Complete waits for in-flight
 // AddTask submissions, which may be waiting for a running task slot.
+//
+// The error returned by g.Wait() is intentionally discarded: the runner
+// captures per-task errors and panics in each TaskResult, and propagating
+// the errgroup error would cancel the shared context on the first failure
+// and abort unrelated in-flight tasks.
 func (ts *Tasks) Complete() {
 	ts.mu.Lock()
 	ts.completed.Store(true)
 	ts.mu.Unlock()
 	ts.pending.Wait()
+	// Intentionally ignore the errgroup error; see the doc comment above.
 	_ = ts.g.Wait()
 }
 
 // All returns shallow, read-only snapshots of all executed tasks for iteration.
 // Only tasks that have finished executing are included. Call Complete
 // before All to ensure all tasks added by AddTask have finished.
+// Because Execute appends the task only after its synchronous Run returns,
+// any concurrent Execute calls must finish before All is called; otherwise
+// their results may be omitted from the snapshot.
 func (ts *Tasks) All() []TaskResult {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	snapshot := make([]TaskResult, 0, len(ts.tasks))
 	for _, t := range ts.tasks {
+		// executeTask stores output/err/startTime/duration before calling
+		// executed.Store(true). Under the Go memory model, the atomic store
+		// happens-after those writes and this atomic load happens-after the
+		// store, so reading those fields without further synchronization is safe.
 		if t.executed.Load() {
 			snapshot = append(snapshot, t.result())
 		}

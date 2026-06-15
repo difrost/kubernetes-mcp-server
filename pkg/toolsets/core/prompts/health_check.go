@@ -3,6 +3,7 @@ package prompts
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ const maxEventConcurrency = 20
 // eventConcurrencyFromQPS converts a RESTConfig QPS value into a sane
 // concurrency limit for event gathering. Non-positive values fall back to 5.
 func eventConcurrencyFromQPS(qps float32) int {
-	concurrency := int(qps)
+	concurrency := int(math.Round(float64(qps)))
 	if concurrency <= 0 {
 		return 5
 	}
@@ -88,12 +89,17 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 	gather := tasks.New(params.Context, perCheckTimeout)
 
 	// Execute namespace list first (blocking) to cache for event filtering and render
+	// If the list fails the error is surfaced in the rendered output and event
+	// gathering is skipped (we cannot determine the relevant namespaces).
 	nsListResult := gather.Execute(gatherNamespaceListTask(params))
 	var cachedNamespaces []v1.Namespace
-	if nsListResult != nil && nsListResult.Err == nil {
-		if nsList, ok := nsListResult.Output.(*v1.NamespaceList); ok && nsList != nil {
-			cachedNamespaces = nsList.Items
-		}
+	var nsListErr error
+	if nsListResult == nil {
+		nsListErr = fmt.Errorf("namespace list task returned no result")
+	} else if nsListResult.Err != nil {
+		nsListErr = nsListResult.Err
+	} else if nsList, ok := nsListResult.Output.(*v1.NamespaceList); ok && nsList != nil {
+		cachedNamespaces = nsList.Items
 	}
 
 	gather.AddTask(gatherNodeTask(params))
@@ -110,7 +116,8 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 	}
 
 	// Gather events from filtered namespaces using the cached namespace list
-	if checkEvents {
+	// Skip event gathering if the namespace list is unavailable.
+	if checkEvents && nsListErr == nil {
 		eventNamespaces := filterEventNamespaces(cachedNamespaces)
 		gather.AddTask(gatherFilteredEventTasks(params, eventNamespaces))
 	}
@@ -164,7 +171,7 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 	renderStart := time.Now()
 	clusterContext := currentContext(params)
 	totalNamespaces := len(cachedNamespaces)
-	promptText := formatClusterHealthPrompt(collectionTime, clusterContext, totalNamespaces, analyzeResults, isOpenShift, checkEvents)
+	promptText := formatClusterHealthPrompt(collectionTime, clusterContext, totalNamespaces, analyzeResults, isOpenShift, checkEvents, nsListErr)
 	klog.Infof("cluster-health-check render phase completed in %s", time.Since(renderStart).Round(time.Millisecond))
 
 	return api.NewPromptCallResult(

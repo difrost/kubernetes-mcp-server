@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -344,27 +345,7 @@ func (s *AnalyzeSuite) TestAnalyzeEvents() {
 		report := analyzeEvents("default", nil, baseTime.Add(-time.Hour))
 		s.NotNil(report)
 		s.Equal(0, report.warnings)
-		s.Equal(0, report.errors)
 		s.Empty(report.objects)
-	})
-
-	s.Run("normal events are filtered out", func() {
-		report := analyzeEvents("default", &v1.EventList{
-			Items: []v1.Event{
-				{
-					Type:    v1.EventTypeNormal,
-					Reason:  "Created",
-					Message: "created",
-					InvolvedObject: v1.ObjectReference{
-						Kind: "Pod",
-						Name: "foo",
-					},
-					LastTimestamp: metav1.Time{Time: baseTime},
-				},
-			},
-		}, baseTime.Add(-time.Hour))
-		s.Equal(0, report.warnings)
-		s.Equal(0, report.errors)
 	})
 
 	s.Run("warning event is counted and rendered", func() {
@@ -383,7 +364,6 @@ func (s *AnalyzeSuite) TestAnalyzeEvents() {
 			},
 		}, baseTime.Add(-time.Hour))
 		s.Equal(1, report.warnings)
-		s.Equal(0, report.errors)
 		s.Len(report.objects, 1)
 	})
 
@@ -430,6 +410,85 @@ func (s *AnalyzeSuite) TestAnalyzeEvents() {
 		s.NotEqual(report.objects[0].key, report2.objects[0].key)
 	})
 
+	s.Run("series event uses Series.LastObservedTime for time window", func() {
+		// Event with stale LastTimestamp outside the window but Series.LastObservedTime inside
+		report := analyzeEvents("default", &v1.EventList{
+			Items: []v1.Event{
+				{
+					Type:           v1.EventTypeWarning,
+					Reason:         "BackOff",
+					Message:        "back-off restarting",
+					InvolvedObject: v1.ObjectReference{Kind: "Pod", Name: "series-pod"},
+					LastTimestamp:  metav1.Time{Time: baseTime.Add(-2 * time.Hour)},
+					Series: &v1.EventSeries{
+						Count:            5,
+						LastObservedTime: metav1.MicroTime{Time: baseTime.Add(-10 * time.Minute)},
+					},
+				},
+			},
+		}, baseTime.Add(-time.Hour))
+		s.Equal(1, report.warnings, "event should be included based on Series.LastObservedTime")
+		s.Len(report.objects, 1)
+		s.Equal(int32(5), report.objects[0].entries[0].count, "count should come from Series.Count")
+	})
+
+	s.Run("series event outside time window is excluded", func() {
+		report := analyzeEvents("default", &v1.EventList{
+			Items: []v1.Event{
+				{
+					Type:           v1.EventTypeWarning,
+					Reason:         "BackOff",
+					Message:        "back-off restarting",
+					InvolvedObject: v1.ObjectReference{Kind: "Pod", Name: "old-series"},
+					LastTimestamp:  metav1.Time{Time: baseTime.Add(-3 * time.Hour)},
+					Series: &v1.EventSeries{
+						Count:            10,
+						LastObservedTime: metav1.MicroTime{Time: baseTime.Add(-2 * time.Hour)},
+					},
+				},
+			},
+		}, baseTime.Add(-time.Hour))
+		s.Equal(0, report.warnings, "series event outside window should be excluded")
+	})
+
+	s.Run("series count is preferred over top-level count", func() {
+		report := analyzeEvents("default", &v1.EventList{
+			Items: []v1.Event{
+				{
+					Type:           v1.EventTypeWarning,
+					Reason:         "FailedMount",
+					Message:        "mount failed",
+					InvolvedObject: v1.ObjectReference{Kind: "Pod", Name: "mount-pod"},
+					Count:          1,
+					LastTimestamp:  metav1.Time{Time: baseTime},
+					Series: &v1.EventSeries{
+						Count:            42,
+						LastObservedTime: metav1.MicroTime{Time: baseTime},
+					},
+				},
+			},
+		}, baseTime.Add(-time.Hour))
+		s.Len(report.objects, 1)
+		s.Equal(int32(42), report.objects[0].entries[0].count)
+	})
+
+	s.Run("event without series uses top-level count", func() {
+		report := analyzeEvents("default", &v1.EventList{
+			Items: []v1.Event{
+				{
+					Type:           v1.EventTypeWarning,
+					Reason:         "FailedMount",
+					Message:        "mount failed",
+					InvolvedObject: v1.ObjectReference{Kind: "Pod", Name: "mount-pod"},
+					Count:          3,
+					LastTimestamp:  metav1.Time{Time: baseTime},
+				},
+			},
+		}, baseTime.Add(-time.Hour))
+		s.Len(report.objects, 1)
+		s.Equal(int32(3), report.objects[0].entries[0].count)
+	})
+
 	s.Run("long multi-byte messages are truncated at rune boundary", func() {
 		longMessage := "日本語" + string(make([]byte, 300))
 		report := analyzeEvents("default", &v1.EventList{
@@ -447,6 +506,29 @@ func (s *AnalyzeSuite) TestAnalyzeEvents() {
 		s.Len(report.objects[0].entries, 1)
 		entry := report.objects[0].entries[0]
 		s.LessOrEqual(len([]rune(entry.message)), 154) // 150 runes + "..."
+		s.Contains(entry.message, "...")
+	})
+
+	s.Run("newlines are collapsed before length truncation", func() {
+		// 80 single-byte lines of 5 chars each plus "\n" become 80*6-1 = 479 runes.
+		message := strings.Repeat("line\n", 80)
+		message = strings.TrimSuffix(message, "\n")
+		report := analyzeEvents("default", &v1.EventList{
+			Items: []v1.Event{
+				{
+					Type:           v1.EventTypeWarning,
+					Reason:         "Failed",
+					Message:        message,
+					InvolvedObject: v1.ObjectReference{Kind: "Pod", Name: "foo"},
+					LastTimestamp:  metav1.Time{Time: baseTime},
+				},
+			},
+		}, baseTime.Add(-time.Hour))
+		s.Len(report.objects, 1)
+		s.Len(report.objects[0].entries, 1)
+		entry := report.objects[0].entries[0]
+		s.LessOrEqual(len([]rune(entry.message)), 154)
+		s.NotContains(entry.message, "\n")
 		s.Contains(entry.message, "...")
 	})
 }

@@ -78,7 +78,6 @@ type pvcIssue struct {
 // eventReport holds the analysis of recent warning/error events.
 type eventReport struct {
 	warnings int
-	errors   int
 	objects  []objectEvents
 }
 
@@ -510,13 +509,15 @@ func analyzeEvents(namespace string, eventList *v1.EventList, since time.Time) *
 	objectIndex := make(map[string]int) // key -> index in report.objects
 
 	for _, event := range eventList.Items {
-		// Only include Warning and Error events
-		if event.Type != v1.EventTypeWarning && event.Type != "Error" {
-			continue
+		// Check timestamp - prefer Series.LastObservedTime for server-side
+		// aggregation events, fall back to top-level fields otherwise.
+		var lastSeenTime time.Time
+		if event.Series != nil {
+			lastSeenTime = event.Series.LastObservedTime.Time
 		}
-
-		// Check timestamp
-		lastSeenTime := event.LastTimestamp.Time
+		if lastSeenTime.IsZero() {
+			lastSeenTime = event.LastTimestamp.Time
+		}
 		if lastSeenTime.IsZero() {
 			lastSeenTime = event.EventTime.Time
 		}
@@ -524,11 +525,7 @@ func analyzeEvents(namespace string, eventList *v1.EventList, since time.Time) *
 			continue
 		}
 
-		if event.Type == v1.EventTypeWarning {
-			report.warnings++
-		} else {
-			report.errors++
-		}
+		report.warnings++
 
 		// Collapse multi-line messages and limit length
 		message := strings.ReplaceAll(event.Message, "\n", "; ")
@@ -546,9 +543,15 @@ func analyzeEvents(namespace string, eventList *v1.EventList, since time.Time) *
 			report.objects = append(report.objects, objectEvents{key: key})
 		}
 
+		// Prefer Series.Count for server-side aggregated events.
+		count := event.Count
+		if event.Series != nil && event.Series.Count > count {
+			count = event.Series.Count
+		}
+
 		report.objects[idx].entries = append(report.objects[idx].entries, eventEntry{
 			reason:  event.Reason,
-			count:   event.Count,
+			count:   count,
 			message: message,
 		})
 	}

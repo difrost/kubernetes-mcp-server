@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/kubernetes-mcp-server/pkg/api"
@@ -56,7 +57,10 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 	gatherStart := time.Now()
 	gather := tasks.New(params.Context, perCheckTimeout)
 
-	// Check namespace existence (blocking – gates further checks)
+	// Check namespace existence. Only a definitive NotFound aborts further
+	// checks. Other errors (Forbidden, Unauthorized, etc.) are surfaced as
+	// warnings while workload analysis proceeds - the user may still have
+	// permissions for the individual resource APIs.
 	nsResult := gather.Execute(gatherNamespaceGetTask(params, namespace))
 	var nsLookupErr error
 	if nsResult == nil {
@@ -65,7 +69,8 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 		nsLookupErr = nsResult.Err
 	}
 
-	if nsLookupErr == nil {
+	nsNotFound := nsLookupErr != nil && apierrors.IsNotFound(nsLookupErr)
+	if !nsNotFound {
 		gather.AddTask(gatherPodTask(params, namespace))
 		gather.AddTask(gatherDeploymentTask(params, namespace))
 		gather.AddTask(gatherStatefulSetTask(params, namespace))
@@ -85,7 +90,7 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 	analyzeStart := time.Now()
 	analyze := tasks.New(params.Context, perCheckTimeout)
 
-	if nsLookupErr == nil {
+	if !nsNotFound {
 		analyze.AddTask(analyzePodHealthTask(gatherResults))
 		analyze.AddTask(analyzeDeploymentHealthTask(gatherResults))
 		analyze.AddTask(analyzeStatefulSetHealthTask(gatherResults))

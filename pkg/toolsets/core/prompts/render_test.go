@@ -2,6 +2,7 @@ package prompts
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -182,17 +183,15 @@ func (s *RenderSuite) TestRenderEvents() {
 	s.Run("no results renders zero counts", func() {
 		out := renderEvents(nil, 0)
 		s.Contains(out, "Warnings:** 0")
-		s.Contains(out, "Errors:** 0")
-		s.Contains(out, "No recent warning/error events")
+		s.Contains(out, "No recent warning events")
 	})
 
-	s.Run("warning and error totals are aggregated", func() {
+	s.Run("warning totals are aggregated", func() {
 		results := []tasks.TaskResult{
 			{
 				Name: eventTaskPrefix + "ns1",
 				Output: &eventReport{
 					warnings: 2,
-					errors:   1,
 					objects: []objectEvents{{
 						key: "ns1/Pod/foo",
 						entries: []eventEntry{
@@ -204,7 +203,6 @@ func (s *RenderSuite) TestRenderEvents() {
 		}
 		out := renderEvents(results, 0)
 		s.Contains(out, "Warnings:** 2")
-		s.Contains(out, "Errors:** 1")
 		s.Contains(out, "ns1/Pod/foo")
 		s.Contains(out, "Failed")
 	})
@@ -227,7 +225,26 @@ func (s *RenderSuite) TestRenderEvents() {
 		s.Contains(out, "ns1/Pod/a")
 		s.Contains(out, "ns1/Pod/b")
 		s.NotContains(out, "ns1/Pod/c")
-		s.Contains(out, "list truncated")
+		s.Contains(out, "Event list truncated")
+	})
+
+	s.Run("truncation to zero objects shows budget note not no events", func() {
+		results := []tasks.TaskResult{
+			{
+				Name: eventTaskPrefix + "ns1",
+				Output: &eventReport{
+					warnings: 5,
+					objects: []objectEvents{
+						{key: "ns1/Pod/a", entries: []eventEntry{{reason: "Failed", count: 1, message: "m1"}, {reason: "BackOff", count: 1, message: "m2"}}},
+					},
+				},
+			},
+		}
+		out := renderEvents(results, 1)
+		s.Contains(out, "Warnings:** 5")
+		s.Contains(out, "Event list truncated")
+		s.Contains(out, "do not fit in the available event budget")
+		s.NotContains(out, "No recent warning events")
 	})
 
 	s.Run("task errors are surfaced", func() {
@@ -273,9 +290,9 @@ func (s *RenderSuite) TestFormatPromptHeader() {
 func (s *RenderSuite) TestFormatPromptInstructions() {
 	out := formatPromptInstructions("cluster")
 	s.Contains(out, "## Your Task")
-		s.Contains(out, "Analyze the following cluster diagnostic data")
-		s.Contains(out, "Overall Health Status")
-		s.Contains(out, "Recommendations")
+	s.Contains(out, "Analyze the following cluster diagnostic data")
+	s.Contains(out, "Overall Health Status")
+	s.Contains(out, "Recommendations")
 }
 
 func (s *RenderSuite) TestFormatPromptFooter() {
@@ -341,13 +358,23 @@ func (s *RenderSuite) TestFormatClusterHealthPrompt() {
 	results := []tasks.TaskResult{
 		{Name: taskNameNodes, Output: &nodeHealthReport{totalNodes: 1, readyNodes: 1}},
 	}
-	out := formatClusterHealthPrompt(collectionTime, "test-cluster", 5, results, false, false)
-	s.Contains(out, "# Cluster Health Check Diagnostic Data for test-cluster")
-	s.Contains(out, "All namespaces for workload data")
+
+	s.Run("successful namespace list renders normally", func() {
+		out := formatClusterHealthPrompt(collectionTime, "test-cluster", 5, results, false, false, nil)
+		s.Contains(out, "# Cluster Health Check Diagnostic Data for test-cluster")
+		s.Contains(out, "All namespaces for workload data")
 		s.Contains(out, "system namespaces for events")
 		s.Contains(out, "Total: 5")
 		s.Contains(out, "## Nodes")
-		s.Contains(out, "comprehensive health assessment")
+		s.NotContains(out, "WARNING")
+	})
+
+	s.Run("namespace list error surfaces warning", func() {
+		out := formatClusterHealthPrompt(collectionTime, "test-cluster", 0, results, true, false, errors.New("forbidden"))
+		s.Contains(out, "WARNING:** Failed to list namespaces: forbidden")
+		s.Contains(out, "Event gathering was skipped")
+		s.Contains(out, "## Nodes")
+	})
 }
 
 func (s *RenderSuite) TestFormatNamespaceHealthPrompt() {
@@ -365,12 +392,20 @@ func (s *RenderSuite) TestFormatNamespaceHealthPrompt() {
 		s.Contains(out, "namespace health assessment")
 	})
 
-	s.Run("lookup error renders warning and no data", func() {
+	s.Run("NotFound error renders warning and no data", func() {
 		err := apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "missing")
 		out := formatNamespaceHealthPrompt(collectionTime, "test-cluster", "missing", nil, false, err)
 		s.Contains(out, "WARNING:** Namespace 'missing' not found")
 		s.Contains(out, "No diagnostic data available")
 		s.NotContains(out, "## Workload Health")
+	})
+
+	s.Run("Forbidden error renders warning but continues with workload data", func() {
+		err := apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, "missing", fmt.Errorf("access denied"))
+		out := formatNamespaceHealthPrompt(collectionTime, "test-cluster", "restricted", results, false, err)
+		s.Contains(out, "WARNING:** Access denied")
+		s.Contains(out, "## Workload Health")
+		s.NotContains(out, "No diagnostic data available")
 	})
 }
 

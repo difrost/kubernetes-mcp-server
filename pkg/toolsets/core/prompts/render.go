@@ -17,9 +17,11 @@ import (
 // carry higher diagnostic value), namespace health gets the remainder.
 const reportLineLimit = 200
 
-// maxNamespaceReportLines caps the number of lines reserved for namespace
-// health. Because events have higher diagnostic value, we only set aside up to
-// this many lines for namespaces; any remaining budget is available for events.
+// maxNamespaceReportLines is the maximum number of namespace-health lines we
+// reserve from the shared budget when events are competing for space. It is not
+// a hard cap on namespace output: if there are fewer namespace entries than
+// this value, the unused headroom is given to events, and if there are no
+// events at all, namespaces may use the full reportLineLimit budget.
 const maxNamespaceReportLines = 20
 
 // countEventLines computes how many output lines the event section would
@@ -118,10 +120,10 @@ func countNamespaceHealthLines(results []tasks.TaskResult) int {
 }
 
 // allocateReportBudgets splits the reportLineLimit between namespace and event health sections.
-// Events are allocated first because they carry higher diagnostic value; only
-// up to maxNamespaceReportLines are reserved for namespace health (capped by the
-// actual number of namespace entries). When there are no namespace entries,
-// events may use the entire budget.
+// Events are allocated first because they carry higher diagnostic value. Up to
+// maxNamespaceReportLines are reserved for namespace health, capped by the
+// actual number of namespace entries, so unused namespace headroom is given to
+// events and namespaces may use the full budget when there are no events.
 func allocateReportBudgets(nsResults []tasks.TaskResult, eventResults []tasks.TaskResult) (int, int) {
 	nsCount := countNamespaceHealthLines(nsResults)
 	if nsCount == 0 {
@@ -361,7 +363,6 @@ func renderNamespaceHealthSummary(results []tasks.TaskResult, detailed bool, max
 // consumes 1 + len(entries) lines). A value <= 0 means unlimited.
 func renderEvents(results []tasks.TaskResult, maxLines int) string {
 	totalWarnings := 0
-	totalErrors := 0
 	var allObjects []objectEvents
 	var taskErrors []string
 
@@ -376,7 +377,6 @@ func renderEvents(results []tasks.TaskResult, maxLines int) string {
 
 		if r, ok := t.Output.(*eventReport); ok {
 			totalWarnings += r.warnings
-			totalErrors += r.errors
 			allObjects = append(allObjects, r.objects...)
 		}
 	}
@@ -406,9 +406,9 @@ func renderEvents(results []tasks.TaskResult, maxLines int) string {
 		sb.WriteString("\n\n")
 	}
 
-	fmt.Fprintf(&sb, "**Warnings:** %d | **Errors:** %d\n", totalWarnings, totalErrors)
+	fmt.Fprintf(&sb, "**Warnings:** %d\n", totalWarnings)
 	if eventsTruncated {
-		fmt.Fprintf(&sb, "_Showing top %d involved objects (list truncated)_\n\n", len(allObjects))
+		fmt.Fprintf(&sb, "_Event list truncated (%d involved object(s) shown)_\n\n", len(allObjects))
 	}
 
 	if len(allObjects) > 0 {
@@ -422,10 +422,13 @@ func renderEvents(results []tasks.TaskResult, maxLines int) string {
 		}
 		sb.WriteString(strings.Join(lines, "\n"))
 	} else {
-		if len(taskErrors) > 0 {
+		switch {
+		case len(taskErrors) > 0:
 			sb.WriteString("*No event details available because one or more event analysis tasks failed*")
-		} else {
-			sb.WriteString("*No recent warning/error events*")
+		case totalWarnings > 0:
+			sb.WriteString("*Warning events are present but do not fit in the available event budget. Consider checking the cluster event log directly.*")
+		default:
+			sb.WriteString("*No recent warning events*")
 		}
 	}
 
@@ -559,6 +562,7 @@ func formatClusterHealthPrompt(
 	analyzeResults []tasks.TaskResult,
 	isOpenShift bool,
 	checkEvents bool,
+	nsListErr error,
 ) string {
 	cluster := "unknown"
 	if clusterContext != "" {
@@ -568,6 +572,10 @@ func formatClusterHealthPrompt(
 	var sb strings.Builder
 	sb.WriteString(formatPromptHeader(fmt.Sprintf("Cluster Health Check Diagnostic Data for %s", cluster), collectionTime))
 	fmt.Fprintf(&sb, "**Scope:** All namespaces for workload data; system namespaces for events (Total: %d)\n\n", totalNamespaces)
+	if nsListErr != nil {
+		fmt.Fprintf(&sb, "⚠️ **WARNING:** Failed to list namespaces: %v\n", nsListErr)
+		sb.WriteString("Event gathering was skipped because the namespace list is unavailable.\n")
+	}
 	sb.WriteString(formatPromptInstructions("cluster"))
 
 	sb.WriteString(renderNodeSection(analyzeResults))
@@ -609,7 +617,7 @@ func formatNamespaceHealthPrompt(
 	sb.WriteString("\n")
 	sb.WriteString(formatPromptInstructions("namespace"))
 
-	if nsLookupErr != nil {
+	if apierrors.IsNotFound(nsLookupErr) {
 		sb.WriteString(formatNamespaceLookupNoData(nsLookupErr))
 		return sb.String()
 	}
