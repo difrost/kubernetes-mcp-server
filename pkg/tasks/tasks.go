@@ -98,9 +98,10 @@ func NewWithLimit(ctx context.Context, timeout time.Duration, limit int) *Tasks 
 // AddTask is silently ignored after Complete has been called.
 //
 // Limitation: when using NewWithLimit, AddTask may block until a concurrency
-// slot opens. Because errgroup.Group.Go does not accept a context, this block
-// is not cancellable by the parent context. Tasks must therefore respect
-// ctx.Done() themselves, and a running task must never wait on Complete.
+// slot opens. Because errgroup.Group.Go does not accept a context, this blocked
+// submission itself is not cancellable by the parent context. Once the
+// submission unblocks, the spawned task receives the errgroup context and can
+// observe ctx.Done(). A running task must never wait on Complete.
 func (ts *Tasks) AddTask(t *Task) {
 	if t == nil || t.Run == nil || ts.completed.Load() {
 		return
@@ -149,7 +150,8 @@ func (ts *Tasks) Execute(t *Task) *TaskResult {
 }
 
 // Complete blocks until all async tasks added via AddTask have finished.
-// Tasks are cancelled through the parent context passed to New/NewWithLimit.
+// Cancellation is driven by the parent context or per-task timeout; Complete
+// waits for tasks to observe it.
 // It is safe to call Complete multiple times.
 // After Complete returns, no more tasks can be added via AddTask.
 // Execute may still be called after Complete and will run synchronously.

@@ -184,6 +184,104 @@ func (s *AnalyzeSuite) TestAnalyzePodHealth() {
 		s.Contains(report.issues[0].issues, "Pod in Pending phase")
 	})
 
+	s.Run("pending pod scheduled with init containers stuck is reported as init-stuck", func() {
+		report := analyzePodHealth(&v1.PodList{
+			Items: []v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "init-stuck", Namespace: "default"},
+					Spec: v1.PodSpec{
+						NodeName: "node1",
+						InitContainers: []v1.Container{
+							{Name: "init-1"},
+							{Name: "init-2"},
+							{Name: "init-3"},
+						},
+					},
+					Status: v1.PodStatus{
+						Phase: v1.PodPending,
+						InitContainerStatuses: []v1.ContainerStatus{
+							{
+								Name:  "init-1",
+								Ready: true,
+								State: v1.ContainerState{
+									Terminated: &v1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0},
+								},
+							},
+							{
+								Name: "init-2",
+								State: v1.ContainerState{
+									Waiting: &v1.ContainerStateWaiting{Reason: "PodInitializing"},
+								},
+							},
+							{
+								Name: "init-3",
+								State: v1.ContainerState{
+									Waiting: &v1.ContainerStateWaiting{Reason: "PodInitializing"},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		s.Equal(1, report.totalPods)
+		s.Len(report.issues, 1)
+		s.Contains(report.issues[0].issues, "Init containers not ready: 1/3")
+	})
+
+	s.Run("pending pod not scheduled falls back to generic Pending", func() {
+		report := analyzePodHealth(&v1.PodList{
+			Items: []v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "unscheduled", Namespace: "default"},
+					Spec: v1.PodSpec{
+						InitContainers: []v1.Container{
+							{Name: "init-1"},
+						},
+					},
+					Status: v1.PodStatus{Phase: v1.PodPending},
+				},
+			},
+		})
+		s.Equal(1, report.totalPods)
+		s.Len(report.issues, 1)
+		s.Contains(report.issues[0].issues, "Pod in Pending phase")
+	})
+
+	s.Run("pending pod with init container error defers to container issue", func() {
+		report := analyzePodHealth(&v1.PodList{
+			Items: []v1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "init-error", Namespace: "default"},
+					Spec: v1.PodSpec{
+						NodeName: "node1",
+						InitContainers: []v1.Container{
+							{Name: "init-1"},
+						},
+					},
+					Status: v1.PodStatus{
+						Phase: v1.PodPending,
+						InitContainerStatuses: []v1.ContainerStatus{
+							{
+								Name: "init-1",
+								State: v1.ContainerState{
+									Terminated: &v1.ContainerStateTerminated{Reason: "Error", ExitCode: 1},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		s.Equal(1, report.totalPods)
+		s.Len(report.issues, 1)
+		s.Contains(report.issues[0].issues, "Init container terminated: Error")
+		s.Contains(report.issues[0].issues, "Pod in Pending phase")
+		for key := range report.issues[0].issues {
+			s.False(strings.HasPrefix(key, "Init containers not ready"), "should not contain init-stuck message when init error exists")
+		}
+	})
+
 	s.Run("high restart frequency is reported", func() {
 		start := time.Now().Add(-30 * time.Minute)
 		report := analyzePodHealth(&v1.PodList{

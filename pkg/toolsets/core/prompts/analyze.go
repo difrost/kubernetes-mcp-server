@@ -371,6 +371,43 @@ func addContainerIssue(msg string, issueSet map[string]struct{}, issues *[]strin
 	}
 }
 
+// isInitStuck reports whether a Pending pod is scheduled to a node with init
+// containers that have not all completed and no init-container-level issues were
+// already captured. This distinguishes pods stuck in the init phase from pods
+// that are unschedulable or have explicit init failures (e.g. Error, OOMKilled).
+func isInitStuck(pod *v1.Pod, currentIssues []string) bool {
+	if pod.Status.Phase != v1.PodPending {
+		return false
+	}
+	if pod.Spec.NodeName == "" {
+		return false
+	}
+	if len(pod.Spec.InitContainers) == 0 {
+		return false
+	}
+	// If collectContainerStateIssues already found init container problems
+	// (e.g. terminated with Error), defer to those more specific messages.
+	for _, issue := range currentIssues {
+		if strings.HasPrefix(issue, "Init container") {
+			return false
+		}
+	}
+	ready, total := initProgress(pod)
+	return ready < total
+}
+
+// initProgress returns the number of completed init containers and the total.
+func initProgress(pod *v1.Pod) (int, int) {
+	total := len(pod.Spec.InitContainers)
+	ready := 0
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.Ready || (cs.State.Terminated != nil && cs.State.Terminated.Reason == "Completed" && cs.State.Terminated.ExitCode == 0) {
+			ready++
+		}
+	}
+	return ready, total
+}
+
 // collectPodIssues examines a pod's container statuses and phase and returns
 // a deduplicated list of issue descriptions. Returns nil if the pod is healthy.
 func collectPodIssues(pod *v1.Pod) []string {
@@ -390,7 +427,12 @@ func collectPodIssues(pod *v1.Pod) []string {
 
 	// Check pod phase
 	if pod.Status.Phase != v1.PodRunning && pod.Status.Phase != v1.PodSucceeded {
-		issues = append(issues, fmt.Sprintf("Pod in %s phase", pod.Status.Phase))
+		if isInitStuck(pod, issues) {
+			ready, total := initProgress(pod)
+			issues = append(issues, fmt.Sprintf("Init containers not ready: %d/%d", ready, total))
+		} else {
+			issues = append(issues, fmt.Sprintf("Pod in %s phase", pod.Status.Phase))
+		}
 	}
 
 	// Flag pods with high restart frequency even if no container issues
