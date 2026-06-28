@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -139,8 +140,7 @@ func (s *PromptClusterHealthCheckSuite) TestClusterHealthCheck() {
 	})
 
 	s.Run("output contains expected section headers", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "# Cluster Health Check Diagnostic Data")
 		s.Contains(text, "## Nodes")
 		s.Contains(text, "## Namespace Health")
@@ -148,26 +148,26 @@ func (s *PromptClusterHealthCheckSuite) TestClusterHealthCheck() {
 	})
 
 	s.Run("output shows cluster scope", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "All namespaces for workload data")
 		s.Contains(text, "system namespaces for events")
 	})
 
 	s.Run("section ordering is nodes, namespace health, events", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
-		nodeIdx := findSubstringIndex(text, "## Nodes")
-		nsHealthIdx := findSubstringIndex(text, "## Namespace Health")
-		eventsIdx := findSubstringIndex(text, "## Recent System Events")
+		text := s.requireMessageText(result, 0)
+		nodeIdx := strings.Index(text, "## Nodes")
+		nsHealthIdx := strings.Index(text, "## Namespace Health")
+		eventsIdx := strings.Index(text, "## Recent System Events")
+		s.GreaterOrEqual(nodeIdx, 0, "Nodes section header not found")
+		s.GreaterOrEqual(nsHealthIdx, 0, "Namespace Health section header not found")
+		s.GreaterOrEqual(eventsIdx, 0, "Recent System Events section header not found")
 		s.Less(nodeIdx, nsHealthIdx, "Nodes section should appear before Namespace Health")
 		s.Less(nsHealthIdx, eventsIdx, "Namespace Health section should appear before Events")
 	})
 
 	s.Run("assistant message contains analysis prompt", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[1].Content.(*mcp.TextContent).Text
-		s.Contains(text, "analyze")
+		text := s.requireMessageText(result, 1)
+		s.Contains(text, "I'll analyze the cluster health diagnostic data and provide a comprehensive assessment.")
 	})
 }
 
@@ -184,16 +184,32 @@ func (s *PromptClusterHealthCheckSuite) TestCheckEventsFalse() {
 	})
 
 	s.Run("output does not contain events section", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.NotContains(text, "## Recent System Events")
 	})
 
 	s.Run("nodes and namespace health sections are still present", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "## Nodes")
 		s.Contains(text, "## Namespace Health")
+	})
+}
+
+func (s *PromptClusterHealthCheckSuite) TestCheckEventsInvalidDefaultsToTrue() {
+	s.InitMcpClient()
+
+	result, err := s.GetPrompt("cluster-health-check", map[string]string{
+		"check_events": "invalid",
+	})
+
+	s.Run("completes without error", func() {
+		s.NoError(err)
+		s.Require().NotNil(result)
+	})
+
+	s.Run("events section is present because invalid value defaults to true", func() {
+		text := s.requireMessageText(result, 0)
+		s.Contains(text, "## Recent System Events")
 	})
 }
 
@@ -208,8 +224,7 @@ func (s *PromptClusterHealthCheckSuite) TestNonOpenShiftCluster() {
 	})
 
 	s.Run("output does not contain cluster operators section", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.NotContains(text, "## Cluster Operators")
 	})
 }
@@ -227,17 +242,15 @@ func (s *PromptClusterHealthCheckSuite) TestClusterWideWorkloadDetection() {
 	})
 
 	s.Run("output reports unhealthy deployment in ns-1", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
-		s.Contains(text, "ns-1")
+		text := s.requireMessageText(result, 0)
+		s.Contains(text, "- **ns-1** -")
 		// Cluster-wide rendering uses compact counts rather than workload names.
 		s.Contains(text, "deployments: 1 unhealthy (2 replicas missing)")
 	})
 
 	s.Run("summary reflects non-zero unhealthy workloads", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
-		s.NotContains(text, "**Unhealthy Workloads:** 0")
+		text := s.requireMessageText(result, 0)
+		s.Regexp(`\*\*Unhealthy Workloads:\*\* [1-9]\d*`, text)
 	})
 }
 
@@ -252,19 +265,23 @@ func (s *PromptClusterHealthCheckSuite) TestClusterWideEventDetection() {
 	})
 
 	s.Run("output contains event from kube-system", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "kube-system/Pod/cluster-crashing-pod")
 	})
 
 	s.Run("output shows non-zero warning count", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
-		s.Contains(text, "**Warnings:**")
-		s.NotContains(text, "**Warnings:** 0")
+		text := s.requireMessageText(result, 0)
+		s.Regexp(`\*\*Warnings:\*\* [1-9]\d*`, text)
 	})
 }
 
+// TestGracefulEmptySections verifies that sections with no data (no nodes in
+// envtest) do not prevent other sections from rendering. It does not cover a
+// true partial failure where one gather/analysis task errors while others
+// succeed; inducing that reliably against the shared envtest control plane
+// without affecting other tests would require complex RBAC setup, so that
+// scenario is left for future coverage once the prompt internals expose a
+// safer injection point.
 func (s *PromptClusterHealthCheckSuite) TestGracefulEmptySections() {
 	s.InitMcpClient()
 
@@ -278,26 +295,15 @@ func (s *PromptClusterHealthCheckSuite) TestGracefulEmptySections() {
 	})
 
 	s.Run("nodes section renders even with no nodes", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "## Nodes")
 		s.Contains(text, "No nodes found")
 	})
 
 	s.Run("namespace health section still renders when nodes are empty", func() {
-		s.Require().NotNil(result)
-		text := result.Messages[0].Content.(*mcp.TextContent).Text
+		text := s.requireMessageText(result, 0)
 		s.Contains(text, "## Namespace Health")
 	})
-}
-
-func findSubstringIndex(text, substr string) int {
-	for i := 0; i+len(substr) <= len(text); i++ {
-		if text[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
 
 func TestPromptClusterHealthCheckSuite(t *testing.T) {
