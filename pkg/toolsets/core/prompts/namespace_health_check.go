@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/klog/v2"
-
 	"github.com/containers/kubernetes-mcp-server/pkg/api"
+	klogutil "github.com/containers/kubernetes-mcp-server/pkg/klogutil"
 	"github.com/containers/kubernetes-mcp-server/pkg/tasks"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // InitNamespaceHealthChecks returns the namespace-scoped health check prompts.
@@ -51,7 +50,7 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 	checkEvents := parseCheckEvents(args["check_events"])
 	collectionTime := time.Now()
 
-	klog.Infof("Starting namespace health check for %q...", namespace)
+	klogutil.FromContext(params.Context).Info("Starting namespace health check...", "namespace", namespace)
 
 	// — Phase 1: Gather (parallel API calls, scoped to namespace) —
 	gatherStart := time.Now()
@@ -84,7 +83,7 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 
 	gather.Complete()
 	gatherResults := gather.All()
-	logPhaseStats("namespace-health-check", "gather", gatherStart, gatherResults)
+	logPhaseStats(params.Context, "namespace-health-check", "gather", gatherStart, gatherResults)
 
 	// — Phase 2: Analyze (parallel analysis tasks) —
 	analyzeStart := time.Now()
@@ -112,13 +111,13 @@ func namespaceHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCal
 
 	analyze.Complete()
 	analyzeResults := analyze.All()
-	logPhaseStats("namespace-health-check", "analyze", analyzeStart, analyzeResults)
+	logPhaseStats(params.Context, "namespace-health-check", "analyze", analyzeStart, analyzeResults)
 
 	// — Phase 3: Render —
 	renderStart := time.Now()
 	clusterContext := currentContext(params)
 	promptText := formatNamespaceHealthPrompt(collectionTime, clusterContext, namespace, analyzeResults, checkEvents, nsLookupErr)
-	klog.Infof("namespace-health-check render phase completed in %s", time.Since(renderStart).Round(time.Millisecond))
+	klogutil.FromContext(params.Context).Info("namespace-health-check render phase completed", "duration", time.Since(renderStart).Round(time.Millisecond))
 
 	return api.NewPromptCallResult(
 		"Namespace health diagnostic data gathered successfully",

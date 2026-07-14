@@ -7,12 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/kubernetes-mcp-server/pkg/api"
+	klogutil "github.com/containers/kubernetes-mcp-server/pkg/klogutil"
+	"github.com/containers/kubernetes-mcp-server/pkg/tasks"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/klog/v2"
-
-	"github.com/containers/kubernetes-mcp-server/pkg/api"
-	"github.com/containers/kubernetes-mcp-server/pkg/tasks"
 )
 
 // perCheckTimeout is the maximum time allowed for the gather phase of a single
@@ -82,7 +81,7 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 	checkEvents := parseCheckEvents(args["check_events"])
 	collectionTime := time.Now()
 
-	klog.Info("Starting cluster health check...")
+	klogutil.FromContext(params.Context).Info("Starting cluster health check...")
 
 	// — Phase 1: Gather (parallel API calls) —
 	gatherStart := time.Now()
@@ -130,7 +129,7 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 
 	gather.Complete()
 	gatherResults := gather.All()
-	logPhaseStats("cluster-health-check", "gather", gatherStart, gatherResults)
+	logPhaseStats(params.Context, "cluster-health-check", "gather", gatherStart, gatherResults)
 
 	// — Phase 2: Analyze (parallel analysis tasks) —
 	analyzeStart := time.Now()
@@ -171,14 +170,14 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 
 	analyze.Complete()
 	analyzeResults := analyze.All()
-	logPhaseStats("cluster-health-check", "analyze", analyzeStart, analyzeResults)
+	logPhaseStats(params.Context, "cluster-health-check", "analyze", analyzeStart, analyzeResults)
 
 	// — Phase 3: Render —
 	renderStart := time.Now()
 	clusterContext := currentContext(params)
 	totalNamespaces := len(cachedNamespaces)
 	promptText := formatClusterHealthPrompt(collectionTime, clusterContext, totalNamespaces, analyzeResults, isOpenShift, checkEvents, nsListErr)
-	klog.Infof("cluster-health-check render phase completed in %s", time.Since(renderStart).Round(time.Millisecond))
+	klogutil.FromContext(params.Context).Info("cluster-health-check render phase completed", "duration", time.Since(renderStart).Round(time.Millisecond))
 
 	return api.NewPromptCallResult(
 		"Cluster health diagnostic data gathered successfully",
@@ -204,7 +203,7 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 
 // logPhaseStats logs the total wall-clock duration of a phase together with
 // per-task execution timings for diagnostics.
-func logPhaseStats(prompt string, phase string, phaseStart time.Time, results []tasks.TaskResult) {
+func logPhaseStats(ctx context.Context, prompt string, phase string, phaseStart time.Time, results []tasks.TaskResult) {
 	var taskStats []string
 	for _, r := range results {
 		status := "ok"
@@ -213,8 +212,12 @@ func logPhaseStats(prompt string, phase string, phaseStart time.Time, results []
 		}
 		taskStats = append(taskStats, fmt.Sprintf("%s %s [%s]", r.Name, r.Duration.Round(time.Millisecond), status))
 	}
-	klog.Infof("%s %s phase completed in %s (%d tasks: %s)",
-		prompt, phase, time.Since(phaseStart).Round(time.Millisecond), len(results), strings.Join(taskStats, ", "))
+	klogutil.FromContext(ctx).Info("health check phase completed",
+		"prompt", prompt,
+		"phase", phase,
+		"duration", time.Since(phaseStart).Round(time.Millisecond),
+		"taskCount", len(results),
+		"taskStats", taskStats)
 }
 
 // currentContext returns the current kubeconfig context name from the
