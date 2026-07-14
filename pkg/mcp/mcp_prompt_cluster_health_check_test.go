@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+
+	"github.com/containers/kubernetes-mcp-server/internal/test"
 )
 
 type PromptClusterHealthCheckSuite struct {
@@ -25,7 +27,7 @@ func (s *PromptClusterHealthCheckSuite) SetupTest() {
 
 func (s *PromptClusterHealthCheckSuite) createClusterHealthCheckTestData() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 
 	// Create an unhealthy deployment in ns-1 so the cluster-wide report has
 	// workload issues outside of the default namespace.
@@ -75,7 +77,7 @@ func (s *PromptClusterHealthCheckSuite) createClusterHealthCheckTestData() {
 
 func (s *PromptClusterHealthCheckSuite) TearDownTest() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 	_ = client.AppsV1().Deployments("ns-1").Delete(ctx, "cluster-unhealthy-deploy", metav1.DeleteOptions{})
 	_ = client.CoreV1().Events("kube-system").Delete(ctx, "cluster-health-check-warning-event", metav1.DeleteOptions{})
 	s.BaseMcpSuite.TearDownTest()

@@ -8,10 +8,10 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
 	"github.com/containers/kubernetes-mcp-server/pkg/api"
-	"github.com/containers/kubernetes-mcp-server/pkg/openshift"
 	"github.com/containers/kubernetes-mcp-server/pkg/tasks"
 )
 
@@ -109,8 +109,14 @@ func clusterHealthCheckHandler(params api.PromptHandlerParams) (*api.PromptCallR
 	gather.AddTask(gatherDaemonSetTask(params, ""))
 	gather.AddTask(gatherPVCTask(params, ""))
 
-	// Detect OpenShift to conditionally gather ClusterOperator resources
-	isOpenShift := openshift.IsOpenshift(params.DiscoveryClient())
+	// Detect OpenShift ClusterOperators to conditionally gather them.
+	// We check for the exact GVK we will list rather than inferring OpenShift from
+	// an unrelated group, so the prompt only attempts the list when the resource
+	// is actually available.
+	hasClusterOperator, err := api.HasGVKs(params.DiscoveryClient(), []schema.GroupVersionKind{
+		{Group: "config.openshift.io", Version: "v1", Kind: "ClusterOperator"},
+	})
+	isOpenShift := err == nil && hasClusterOperator
 	if isOpenShift {
 		gather.AddTask(gatherClusterOperatorTask(params))
 	}

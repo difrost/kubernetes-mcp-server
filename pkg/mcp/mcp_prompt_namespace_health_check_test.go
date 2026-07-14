@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
+
+	"github.com/containers/kubernetes-mcp-server/internal/test"
 )
 
 type PromptNamespaceHealthCheckSuite struct {
@@ -25,7 +27,7 @@ func (s *PromptNamespaceHealthCheckSuite) SetupTest() {
 
 func (s *PromptNamespaceHealthCheckSuite) createNamespaceHealthCheckTestData() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 
 	// Create a Deployment with available replicas
 	_, err := client.AppsV1().Deployments("default").Create(ctx, &appsv1.Deployment{
@@ -109,7 +111,7 @@ func (s *PromptNamespaceHealthCheckSuite) createNamespaceHealthCheckTestData() {
 
 func (s *PromptNamespaceHealthCheckSuite) TearDownTest() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 	_ = client.AppsV1().Deployments("default").Delete(ctx, "ns-healthy-deploy", metav1.DeleteOptions{})
 	_ = client.AppsV1().StatefulSets("default").Delete(ctx, "ns-healthy-sts", metav1.DeleteOptions{})
 	_ = client.AppsV1().DaemonSets("default").Delete(ctx, "ns-healthy-ds", metav1.DeleteOptions{})
@@ -308,7 +310,7 @@ func (s *PromptNamespaceHealthCheckSuite) TestNoClusterOperatorsSection() {
 
 func (s *PromptNamespaceHealthCheckSuite) TestUnhealthyWorkloadDetection() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 
 	// Create a deployment and set its status to have unavailable replicas
 	deploy, err := client.AppsV1().Deployments("default").Create(ctx, &appsv1.Deployment{
@@ -360,7 +362,7 @@ func (s *PromptNamespaceHealthCheckSuite) TestUnhealthyWorkloadDetection() {
 
 func (s *PromptNamespaceHealthCheckSuite) TestPodIssueDetection() {
 	ctx := s.T().Context()
-	client := kubernetes.NewForConfigOrDie(envTestRestConfig)
+	client := kubernetes.NewForConfigOrDie(test.EnvTestRestConfig())
 
 	// Create a pod and update its status to simulate CrashLoopBackOff
 	pod, err := client.CoreV1().Pods("default").Create(ctx, &corev1.Pod{
